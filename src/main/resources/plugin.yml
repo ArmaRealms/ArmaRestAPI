@@ -1,5 +1,5 @@
 name: RestPAPI
-version: @version@
+version: 9.9
 main: me.fredthedoggy.restpapi.Restpapi
 api-version: 1.13
 prefix: RestPAPI

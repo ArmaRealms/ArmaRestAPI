@@ -1,7 +1,11 @@
 package me.fredthedoggy.restpapi;
 
+import org.bukkit.Bukkit;
+
 import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
+import java.util.logging.Level;
 
 import static java.util.UUID.randomUUID;
 
@@ -14,14 +18,14 @@ public class RestPapiLoader {
 
     public void enable() {
         this.parent.webServer = new SparkWrapper();
-        org.eclipse.jetty.util.log.Log.setLog(new NoLogging());
-        this.parent.getCommand("restpapi").setExecutor(new RestPapiCommand(this.parent));
-        this.parent.getCommand("rpapi").setExecutor(new RestPapiCommand(this.parent));
+        Objects.requireNonNull(this.parent.getCommand("restpapi")).setExecutor(new RestPapiCommand(this.parent));
+        Objects.requireNonNull(this.parent.getCommand("rpapi")).setExecutor(new RestPapiCommand(this.parent));
         loadWebServer();
     }
 
     public void disable() {
-        System.out.println("[RestPAPI] Disabled Webserver");
+        this.parent.webServer.destroy();
+        Bukkit.getLogger().log(Level.SEVERE,"[RestPAPI] Shutting down plugin.");
     }
 
     public void loadWebServer() {
@@ -31,6 +35,7 @@ public class RestPapiLoader {
         this.parent.config.options().copyDefaults(true);
         this.parent.saveConfig();
         this.parent.webServer.create(this.parent.config.getInt("port"), this.parent.config.getStringList("tokens"));
-        System.out.println("[RestPAPI] Enabled On Port " + this.parent.config.getInt("port"));
+        Bukkit.getLogger().log(Level.INFO,"[RestPAPI] Enabled On Port " + this.parent.config.getInt("port"));
     }
 }
+

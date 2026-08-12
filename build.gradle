@@ -1,7 +1,7 @@
 import org.apache.tools.ant.filters.ReplaceTokens
 
 plugins {
-    id 'com.github.johnrengelman.shadow' version '6.1.0'
+    id 'com.github.johnrengelman.shadow' version '7.1.2' // Reverted shadow plugin version
     id 'java'
 }
 
@@ -9,11 +9,35 @@ sourceCompatibility = targetCompatibility = JavaVersion.VERSION_1_8
 compileJava.options.encoding 'UTF-8'
 
 group 'me.fredthedoggy'
-version '1.0.4'
+version '1.0.5'
+
+java {
+    withJavadocJar()
+    withSourcesJar()
+}
+
+// Disable the default 'jar' task to ensure only the shadowJar is produced
+tasks.jar {
+    enabled = false
+}
 
 shadowJar {
-    relocate 'org.bstats', 'me.fredthedoggy.restpapi'
+    relocate 'org.bstats', 'me.fredthedoggy.restpapi.libs.bstats'
+    relocate 'spark', 'me.fredthedoggy.restpapi.libs.spark'
+    archiveBaseName.set('Restpapi')
+    archiveVersion.set('1.0.5')
+    archiveClassifier.set('')
+    // Removed manifest block as it's not needed for Bukkit plugins
+
+    // Explicitly include the main source set output for relocation
+    from sourceSets.main.output
+
+    // Minimize the JAR to remove unused classes and potentially fix relocation issues
+    minimize()
 }
+
+// Make sure 'build' depends on 'shadowJar'
+build.dependsOn shadowJar
 
 repositories {
     mavenCentral()
@@ -23,14 +47,18 @@ repositories {
 }
 
 dependencies {
-    compileOnly 'org.spigotmc:spigot-api:1.16.5-R0.1-SNAPSHOT'
-    compileOnly 'me.clip:placeholderapi:2.10.9'
-    compileOnly 'com.sparkjava:spark-core:2.9.3'
-    compileOnly 'org.bstats:bstats-bukkit:2.2.1'
-    implementation 'com.heretere.hdl:hdl-spigot:1.5.1'
+    compileOnly 'org.spigotmc:spigot-api:1.20.4-R0.1-SNAPSHOT'
+    compileOnly 'me.clip:placeholderapi:2.11.5'
+    implementation 'org.bstats:bstats-bukkit:3.0.2'
+    implementation 'com.sparkjava:spark-core:2.9.4'
 }
+
 processResources {
-    from(sourceSets.main.resources.srcDirs) {
+    filesMatching('plugin.yml') {
+        expand('project.version': project.version)
+    }
+    filesMatching('**/*') {
+        exclude 'plugin.yml'
         filter ReplaceTokens, tokens: [version: version]
     }
 }
