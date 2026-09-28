@@ -1,130 +1,180 @@
 package me.fredthedoggy.restpapi;
 
+import com.google.gson.Gson;
 import me.clip.placeholderapi.PlaceholderAPI;
 import org.bukkit.Bukkit;
+import org.bukkit.OfflinePlayer;
+import org.bukkit.scheduler.BukkitTask;
+import spark.Request;
+import spark.Response;
 import spark.Service;
 
-import java.util.List;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 
 import static spark.Service.ignite;
 
-class SparkWrapper {
-    Service http;
+final class SparkWrapper {
+    private static final Gson JSON = new Gson();
+    private final Restpapi plugin;
+    private final RestConfig config;
+    private final Semaphore concurrent;
+    private final RequestLimiter limiter;
+    private final AtomicBoolean accepting = new AtomicBoolean(true);
+    private Service http;
 
-    void create(int port, List<String> tokens) {
-        http = ignite().port(port);
+    SparkWrapper(Restpapi plugin, RestConfig config) {
+        this.plugin = plugin;
+        this.config = config;
+        concurrent = new Semaphore(config.maxConcurrent());
+        limiter = new RequestLimiter(config.rateLimit(), config.rateWindowSeconds());
+    }
 
-        // New endpoint for server-wide placeholders
-        http.get("/server/:placeholder", (request, response) -> {
-            response.type("application/json");
-
-            String placeholderResult = PlaceholderAPI.setPlaceholders(null, "%" + request.params(":placeholder") + "%");
-
-            if (placeholderResult.equals("%" + request.params(":placeholder") + "%")) {
-                response.status(406);
-                return "{\"status\":\"406\",\"message\":\"Invalid Placeholder\"}";
-            } else {
-                response.status(200);
-                return "{\"status\":\"200\",\"message\":\"" + placeholderResult + "\"}";
+    void start() {
+        Service service = ignite();
+        http = service;
+        AtomicReference<Exception> startFailure = new AtomicReference<>();
+        boolean routesRegistered = false;
+        try {
+            service.initExceptionHandler(startFailure::set);
+            service.untrustForwardHeaders();
+            service.ipAddress(config.bind());
+            service.port(config.port());
+            service.threadPool(32, 4, 30000);
+            service.get("/server/:placeholder", (request, response) -> handle(request, response, false));
+            routesRegistered = true;
+            service.get("/:uuid/:placeholder", (request, response) -> handle(request, response, true));
+            service.notFound((request, response) -> json(response, 404, "Invalid URI"));
+            service.internalServerError((request, response) -> json(response, 500, "Internal Server Error"));
+            service.awaitInitialization();
+            if (startFailure.get() != null) {
+                throw new IllegalStateException("HTTP listener could not bind", startFailure.get());
             }
-        });
-
-        http.get("/:uuid/:placeholder", (request, response) -> {
-
-            Bukkit.getLogger().log(Level.SEVERE, " !!! Using insecure version TOKEN DISABLED! !!!");
-            Bukkit.getLogger().log(Level.SEVERE, "Token received: " + request.headers("token"));
-            /*
-            // todo: add back later
-            // Avoid someone spamming PlaceholderAPI requests.
-
-            if (request.headers("token") == null) {
-                response.type("application/json");
-                response.status(401);
-                return "{\"status\":\"401\",\"message\":\"Unauthorized\"}";
-            } else if (tokens.stream().noneMatch(request.headers("token")::contains)) {
-                response.type("application/json");
-                response.status(401);
-                return "{\"status\":\"401\",\"message\":\"Unauthorized\"}";
-            } else {
-             */
-            response.type("application/json");
-            UUID specifiedUUID;
-            try {
-                specifiedUUID = UUID.fromString(request.params(":uuid"));
+        } catch (RuntimeException exception) {
+            if (routesRegistered) stop();
+            else {
+                accepting.set(false);
+                http = null;
             }
-            catch(Exception e) {
-                response.type("application/json");
-                response.status(400);
-                return "{\"status\":\"400\",\"message\":\"Invalid UUID\"}";
+            throw exception;
+        }
+    }
+
+    private String handle(Request request, Response response, boolean playerRoute) {
+        response.type("application/json");
+        if (!accepting.get() || !plugin.isEnabled()) return json(response, 503, "Service Unavailable");
+        if (!authorized(request.headers("Token"))) return json(response, 401, "Unauthorized");
+        // Use the socket peer; forwarded headers can be forged unless a trusted proxy strips them.
+        if (!config.allowedIps().isEmpty() && !config.allowedIps().contains(request.ip())) {
+            return json(response, 403, "Forbidden");
+        }
+        if (!limiter.allow(request.ip())) return json(response, 429, "Too Many Requests");
+        if (!concurrent.tryAcquire()) return json(response, 503, "Service Busy");
+        try {
+            String name = request.params(":placeholder");
+            if (name == null || name.isEmpty() || name.length() > 256 || name.indexOf('%') >= 0) {
+                return json(response, 400, "Invalid Placeholder");
             }
-            if (Bukkit.getOfflinePlayer(specifiedUUID).hasPlayedBefore()) {
-
-                response.type("application/json");
-                response.status(200);
-
-                String placeholderResult =  PlaceholderAPI.setPlaceholders(
-                        Bukkit.getOfflinePlayer(UUID.fromString(request.params(":uuid"))),
-                        "%" + request.params(":placeholder") + "%"
-                );
-
-                String placeholder = "{\"status\":\"200\",\"message\":\"" + placeholderResult + "\"}";
-
-                if (placeholderResult.equals("%" + request.params(":placeholder") + "%")) {
-
-                    response.type("application/json");
-                    response.status(406);
-                    return "{\"status\":\"406\",\"message\":\"Invalid Placeholder\"}";
-
-                } else {
-
-                    return placeholder;
-
+            UUID uuid = null;
+            if (playerRoute) {
+                try {
+                    uuid = UUID.fromString(request.params(":uuid"));
+                } catch (IllegalArgumentException exception) {
+                    return json(response, 400, "Invalid UUID");
                 }
-            } else {
-
-                response.type("application/json");
-                response.status(400);
-                return "{\"status\":\"400\",\"message\":\"Player Has Not Played Before\"}";
-
             }
-            //}
-
-        });
-        http.get("/*", (request, response) -> {
-
-            response.status(404);
-            response.type("application/json");
-            return "{\"status\":\"404\",\"message\":\"Invalid URI\"}";
-
-        });
-        http.get("/*/*/*", (request, response) -> {
-
-            response.status(404);
-            response.type("application/json");
-            return "{\"status\":\"404\",\"message\":\"Invalid URI\"}";
-
-        });
-        http.get("/*/*/*/*", (request, response) -> {
-
-            response.status(404);
-            response.type("application/json");
-            return "{\"status\":\"404\",\"message\":\"Invalid URI\"}";
-
-        });
-        http.notFound((request, response) -> {
-
-            response.status(404);
-            response.type("application/json");
-            return "{\"status\":\"404\",\"message\":\"Invalid URI\"}";
-
-        });
+            final UUID playerId = uuid;
+            final String expression = "%" + name + "%";
+            CompletableFuture<Lookup> future = new CompletableFuture<>();
+            BukkitTask task = Bukkit.getScheduler().runTask(plugin, () -> {
+                if (!accepting.get() || future.isDone()) return;
+                try {
+                    OfflinePlayer player = playerId == null ? null : Bukkit.getOfflinePlayer(playerId);
+                    if (player != null && !player.hasPlayedBefore() && !player.isOnline()) {
+                        future.complete(new Lookup(400, "Player Has Not Played Before"));
+                        return;
+                    }
+                    String result = PlaceholderAPI.setPlaceholders(player, expression);
+                    future.complete(resolveResult(expression, result));
+                } catch (Exception exception) {
+                    plugin.getLogger().log(Level.WARNING, "Placeholder lookup failed", exception);
+                    future.complete(new Lookup(500, "Internal Server Error"));
+                }
+            });
+            try {
+                Lookup result = future.get(config.timeoutMillis(), TimeUnit.MILLISECONDS);
+                return json(response, Integer.parseInt(result.status), result.message);
+            } catch (TimeoutException exception) {
+                future.cancel(false);
+                task.cancel();
+                return json(response, 504, "Lookup Timed Out");
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                task.cancel();
+                return json(response, 503, "Service Unavailable");
+            } catch (ExecutionException exception) {
+                plugin.getLogger().log(Level.WARNING, "Placeholder lookup failed", exception);
+                return json(response, 500, "Internal Server Error");
+            }
+        } catch (RuntimeException exception) {
+            plugin.getLogger().log(Level.WARNING, "Could not schedule placeholder lookup", exception);
+            return json(response, 503, "Service Unavailable");
+        } finally {
+            concurrent.release();
+        }
     }
 
-    void destroy() {
-        http.stop();
-        Bukkit.getLogger().log(Level.WARNING, "[RestPAPI] Disabled Webserver");
+    boolean authorized(String provided) {
+        if (provided == null || provided.isEmpty()) return false;
+        byte[] candidate = provided.getBytes(StandardCharsets.UTF_8);
+        boolean matched = false;
+        for (String token : config.tokens()) {
+            matched |= MessageDigest.isEqual(candidate, token.getBytes(StandardCharsets.UTF_8));
+        }
+        return matched;
     }
 
+    static int placeholderStatus(String expression, String result) {
+        return expression.equals(result) ? 406 : 200;
+    }
+
+    private static Lookup resolveResult(String expression, String result) {
+        int status = placeholderStatus(expression, result);
+        return new Lookup(status, status == 406 ? "Invalid Placeholder" : result);
+    }
+
+    static String json(Response response, int status, String message) {
+        response.status(status);
+        response.type("application/json");
+        return JSON.toJson(new Lookup(status, message));
+    }
+
+    void stop() {
+        accepting.set(false);
+        Service service = http;
+        http = null;
+        if (service != null) {
+            service.stop();
+            service.awaitStop();
+        }
+    }
+
+    private static final class Lookup {
+        private final String status;
+        private final String message;
+
+        Lookup(int status, String message) {
+            this.status = Integer.toString(status);
+            this.message = message;
+        }
+    }
 }

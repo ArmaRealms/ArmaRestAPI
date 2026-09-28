@@ -24,6 +24,7 @@ tasks.jar {
 shadowJar {
     relocate 'org.bstats', 'me.fredthedoggy.restpapi.libs.bstats'
     relocate 'spark', 'me.fredthedoggy.restpapi.libs.spark'
+    relocate 'com.google.gson', 'me.fredthedoggy.restpapi.libs.gson'
     archiveBaseName.set('Restpapi')
     archiveVersion.set('1.0.5')
     archiveClassifier.set('')
@@ -51,6 +52,13 @@ dependencies {
     compileOnly 'me.clip:placeholderapi:2.11.5'
     implementation 'org.bstats:bstats-bukkit:3.0.2'
     implementation 'com.sparkjava:spark-core:2.9.4'
+    implementation 'com.google.code.gson:gson:2.11.0'
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.11.4'
+    testImplementation 'org.mockito:mockito-core:5.15.2'
+}
+
+test {
+    useJUnitPlatform()
 }
 
 processResources {
