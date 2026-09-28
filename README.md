@@ -52,4 +52,4 @@ Then query `https://api.example.com/survival/UUID/player_name` with the `Token` 
 
 ## Build
 
-`bash gradlew test shadowJar`. The shaded plugin JAR is written under `build/libs`.
+Use JDK 25 and `bash gradlew test shadowJar` (Gradle 9.8.0). The plugin targets Paper API 1.21.11; the shaded JAR is written under `build/libs`.
