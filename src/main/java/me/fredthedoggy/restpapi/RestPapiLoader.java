@@ -7,12 +7,15 @@ import java.io.File;
 import java.util.Arrays;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.logging.Level;
 
 public final class RestPapiLoader {
     private final Restpapi plugin;
     private SparkWrapper webServer;
     private RestConfig runningConfig;
+    private boolean reloading;
+    private boolean disabled;
 
     RestPapiLoader(Restpapi plugin) { this.plugin = plugin; }
 
@@ -44,44 +47,75 @@ public final class RestPapiLoader {
         }
     }
 
-    synchronized boolean reload() {
+    synchronized CompletableFuture<Boolean> reload() {
+        if (disabled || reloading) return CompletableFuture.completedFuture(false);
         plugin.reloadConfig();
         final RestConfig next;
         try {
             next = new RestConfig(plugin.getConfig());
         } catch (RuntimeException exception) {
             plugin.getLogger().log(Level.WARNING, "Invalid REST config; previous service remains active", exception);
-            return false;
+            return CompletableFuture.completedFuture(false);
         }
+        reloading = true;
         SparkWrapper previous = webServer;
-        if (previous != null) previous.stop();
-        webServer = null;
-        SparkWrapper replacement = new SparkWrapper(plugin, next);
+        RestConfig previousConfig = runningConfig;
+        return CompletableFuture.supplyAsync(() -> replace(previous, previousConfig, next));
+    }
+
+    private boolean replace(SparkWrapper previous, RestConfig previousConfig, RestConfig next) {
         try {
+            if (previous != null) {
+                previous.stop();
+                previous.awaitStop(); // Never wait for Spark workers on the Bukkit tick thread.
+            }
+            synchronized (this) {
+                if (disabled) return false;
+            }
+            SparkWrapper replacement = new SparkWrapper(plugin, next);
             replacement.start();
-            webServer = replacement;
-            runningConfig = next;
+            synchronized (this) {
+                if (disabled) {
+                    replacement.stop();
+                    return false;
+                }
+                webServer = replacement;
+                runningConfig = next;
+            }
             plugin.getLogger().info("REST listening on " + next.bind() + ":" + next.port());
             return true;
         } catch (RuntimeException exception) {
             plugin.getLogger().log(Level.SEVERE, "REST reload failed; restoring previous service", exception);
-            if (runningConfig != null) {
+            if (previousConfig != null && !isDisabled()) {
                 try {
-                    SparkWrapper restored = new SparkWrapper(plugin, runningConfig);
+                    SparkWrapper restored = new SparkWrapper(plugin, previousConfig);
                     restored.start();
-                    webServer = restored;
+                    synchronized (this) {
+                        if (disabled) restored.stop();
+                        else webServer = restored;
+                    }
                 } catch (RuntimeException rollbackException) {
                     plugin.getLogger().log(Level.SEVERE, "REST rollback failed; disabling plugin", rollbackException);
-                    Bukkit.getPluginManager().disablePlugin(plugin);
+                    Bukkit.getScheduler().runTask(plugin, () -> Bukkit.getPluginManager().disablePlugin(plugin));
                 }
             }
             return false;
+        } finally {
+            synchronized (this) {
+                reloading = false;
+            }
         }
     }
 
-    synchronized void disable() {
-        SparkWrapper server = webServer;
-        webServer = null;
+    private synchronized boolean isDisabled() { return disabled; }
+
+    void disable() {
+        SparkWrapper server;
+        synchronized (this) {
+            disabled = true;
+            server = webServer;
+            webServer = null;
+        }
         if (server != null) server.stop();
     }
 }

@@ -23,7 +23,7 @@ Tokens must contain at least 16 characters, cannot be blank or padded with space
 
 `bind` selects the interface **inside the container** (default `0.0.0.0`). `allowed-ips` is an exact match list of socket peer IPs; an empty list permits any peer with a valid token. Behind Nginx it will normally see the proxy address, not the original client. It deliberately ignores `X-Forwarded-For`. The rate limit is per socket peer and uses a fixed window; no more than 4096 distinct peers are tracked. The concurrency limit returns HTTP 503 instead of queuing unbounded lookups. Placeholder evaluation runs on the Minecraft main thread; clients receive HTTP 504 if it takes longer than `timeout-ms`. A lookup already running on the main thread cannot be interrupted.
 
-The command `/restpapi reload` reads the file again, validates it before stopping the old listener, and attempts to restore the old listener if binding the new one fails. A failed rollback disables the plugin. A successful reload updates both the port and token set.
+The command `/restpapi reload` reads the file again, validates it before stopping the old listener, and attempts to restore the old listener if binding the new one fails. A failed rollback disables the plugin. Listener shutdown and startup take place off the Minecraft main thread; the command reports the result after they finish. In-flight lookups receive 503 during shutdown. A successful reload updates both the port and token set.
 
 ## Requests
 

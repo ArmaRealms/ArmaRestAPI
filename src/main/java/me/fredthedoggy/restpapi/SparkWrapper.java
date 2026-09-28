@@ -12,7 +12,9 @@ import spark.Service;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.UUID;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
@@ -30,6 +32,8 @@ final class SparkWrapper {
     private final Semaphore concurrent;
     private final RequestLimiter limiter;
     private final AtomicBoolean accepting = new AtomicBoolean(true);
+    private final AtomicBoolean stopped = new AtomicBoolean(false);
+    private final Set<CompletableFuture<Lookup>> pending = ConcurrentHashMap.newKeySet();
     private Service http;
 
     SparkWrapper(Restpapi plugin, RestConfig config) {
@@ -60,7 +64,10 @@ final class SparkWrapper {
                 throw new IllegalStateException("HTTP listener could not bind", startFailure.get());
             }
         } catch (RuntimeException exception) {
-            if (routesRegistered) stop();
+            if (routesRegistered) {
+                stop();
+                awaitStop();
+            }
             else {
                 accepting.set(false);
                 http = null;
@@ -79,6 +86,7 @@ final class SparkWrapper {
         }
         if (!limiter.allow(request.ip())) return json(response, 429, "Too Many Requests");
         if (!concurrent.tryAcquire()) return json(response, 503, "Service Busy");
+        CompletableFuture<Lookup> future = new CompletableFuture<>();
         try {
             String name = request.params(":placeholder");
             if (name == null || name.isEmpty() || name.length() > 256 || name.indexOf('%') >= 0) {
@@ -94,7 +102,7 @@ final class SparkWrapper {
             }
             final UUID playerId = uuid;
             final String expression = "%" + name + "%";
-            CompletableFuture<Lookup> future = new CompletableFuture<>();
+            track(future);
             BukkitTask task = Bukkit.getScheduler().runTask(plugin, () -> {
                 if (!accepting.get() || future.isDone()) return;
                 try {
@@ -129,6 +137,7 @@ final class SparkWrapper {
             plugin.getLogger().log(Level.WARNING, "Could not schedule placeholder lookup", exception);
             return json(response, 503, "Service Unavailable");
         } finally {
+            pending.remove(future);
             concurrent.release();
         }
     }
@@ -152,6 +161,11 @@ final class SparkWrapper {
         return new Lookup(status, status == 406 ? "Invalid Placeholder" : result);
     }
 
+    void track(CompletableFuture<Lookup> future) {
+        pending.add(future);
+        if (!accepting.get()) future.complete(new Lookup(503, "Service Unavailable"));
+    }
+
     static String json(Response response, int status, String message) {
         response.status(status);
         response.type("application/json");
@@ -159,16 +173,19 @@ final class SparkWrapper {
     }
 
     void stop() {
+        if (!stopped.compareAndSet(false, true)) return;
         accepting.set(false);
-        Service service = http;
-        http = null;
-        if (service != null) {
-            service.stop();
-            service.awaitStop();
+        for (CompletableFuture<Lookup> future : pending) {
+            future.complete(new Lookup(503, "Service Unavailable"));
         }
+        if (http != null) http.stop();
     }
 
-    private static final class Lookup {
+    void awaitStop() {
+        if (http != null) http.awaitStop();
+    }
+
+    static final class Lookup {
         private final String status;
         private final String message;
 
