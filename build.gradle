@@ -1,19 +1,22 @@
 import org.apache.tools.ant.filters.ReplaceTokens
 
 plugins {
-    id 'com.github.johnrengelman.shadow' version '7.1.2' // Reverted shadow plugin version
+    id 'com.gradleup.shadow' version '9.6.1'
     id 'java'
 }
-
-sourceCompatibility = targetCompatibility = JavaVersion.VERSION_1_8
-compileJava.options.encoding 'UTF-8'
 
 group 'me.fredthedoggy'
 version '1.0.5'
 
 java {
+    toolchain.languageVersion = JavaLanguageVersion.of(25)
     withJavadocJar()
     withSourcesJar()
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 25
 }
 
 // Disable the default 'jar' task to ensure only the shadowJar is produced
@@ -24,6 +27,7 @@ tasks.jar {
 shadowJar {
     relocate 'org.bstats', 'me.fredthedoggy.restpapi.libs.bstats'
     relocate 'spark', 'me.fredthedoggy.restpapi.libs.spark'
+    relocate 'com.google.gson', 'me.fredthedoggy.restpapi.libs.gson'
     archiveBaseName.set('Restpapi')
     archiveVersion.set('1.0.5')
     archiveClassifier.set('')
@@ -32,8 +36,6 @@ shadowJar {
     // Explicitly include the main source set output for relocation
     from sourceSets.main.output
 
-    // Minimize the JAR to remove unused classes and potentially fix relocation issues
-    minimize()
 }
 
 // Make sure 'build' depends on 'shadowJar'
@@ -41,16 +43,25 @@ build.dependsOn shadowJar
 
 repositories {
     mavenCentral()
-    maven { url = 'https://oss.sonatype.org/content/groups/public/' }
-    maven { url = 'https://hub.spigotmc.org/nexus/content/repositories/snapshots/' }
+    maven { url = 'https://repo.papermc.io/repository/maven-public/' }
     maven { url = 'https://repo.extendedclip.com/content/repositories/placeholderapi/' }
 }
 
 dependencies {
-    compileOnly 'org.spigotmc:spigot-api:1.20.4-R0.1-SNAPSHOT'
-    compileOnly 'me.clip:placeholderapi:2.11.5'
+    compileOnly 'io.papermc.paper:paper-api:1.21.11-R0.1-SNAPSHOT'
+    compileOnly 'me.clip:placeholderapi:2.12.3'
     implementation 'org.bstats:bstats-bukkit:3.0.2'
     implementation 'com.sparkjava:spark-core:2.9.4'
+    implementation 'com.google.code.gson:gson:2.11.0'
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.11.4'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    testImplementation 'org.mockito:mockito-core:5.24.0'
+    testImplementation 'io.papermc.paper:paper-api:1.21.11-R0.1-SNAPSHOT'
+    testImplementation 'me.clip:placeholderapi:2.12.3'
+}
+
+test {
+    useJUnitPlatform()
 }
 
 processResources {
