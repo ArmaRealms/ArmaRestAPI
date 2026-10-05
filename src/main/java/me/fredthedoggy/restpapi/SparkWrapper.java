@@ -4,7 +4,6 @@ import com.google.gson.Gson;
 import me.clip.placeholderapi.PlaceholderAPI;
 import org.bukkit.Bukkit;
 import org.bukkit.OfflinePlayer;
-import org.bukkit.scheduler.BukkitTask;
 import spark.Request;
 import spark.Response;
 import spark.Service;
@@ -12,13 +11,7 @@ import spark.Service;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.UUID;
-import java.util.Set;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Semaphore;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
@@ -33,7 +26,6 @@ final class SparkWrapper {
     private final RequestLimiter limiter;
     private final AtomicBoolean accepting = new AtomicBoolean(true);
     private final AtomicBoolean stopped = new AtomicBoolean(false);
-    private final Set<CompletableFuture<Lookup>> pending = ConcurrentHashMap.newKeySet();
     private Service http;
 
     SparkWrapper(Restpapi plugin, RestConfig config) {
@@ -67,8 +59,7 @@ final class SparkWrapper {
             if (routesRegistered) {
                 stop();
                 awaitStop();
-            }
-            else {
+            } else {
                 accepting.set(false);
                 http = null;
             }
@@ -86,58 +77,43 @@ final class SparkWrapper {
         }
         if (!limiter.allow(request.ip())) return json(response, 429, "Too Many Requests");
         if (!concurrent.tryAcquire()) return json(response, 503, "Service Busy");
-        CompletableFuture<Lookup> future = new CompletableFuture<>();
+
         try {
             String name = request.params(":placeholder");
             if (name == null || name.isEmpty() || name.length() > 256 || name.indexOf('%') >= 0) {
                 return json(response, 400, "Invalid Placeholder");
             }
-            UUID uuid = null;
+
+            UUID playerId = null;
             if (playerRoute) {
                 try {
-                    uuid = UUID.fromString(request.params(":uuid"));
+                    playerId = UUID.fromString(request.params(":uuid"));
                 } catch (IllegalArgumentException exception) {
                     return json(response, 400, "Invalid UUID");
                 }
             }
-            final UUID playerId = uuid;
-            final String expression = "%" + name + "%";
-            track(future);
-            BukkitTask task = Bukkit.getScheduler().runTask(plugin, () -> {
-                if (!accepting.get() || future.isDone()) return;
-                try {
-                    OfflinePlayer player = playerId == null ? null : Bukkit.getOfflinePlayer(playerId);
-                    if (player != null && !player.hasPlayedBefore() && !player.isOnline()) {
-                        future.complete(new Lookup(400, "Player Has Not Played Before"));
-                        return;
-                    }
-                    String result = PlaceholderAPI.setPlaceholders(player, expression);
-                    future.complete(resolveResult(expression, result));
-                } catch (Exception exception) {
-                    plugin.getLogger().log(Level.WARNING, "Placeholder lookup failed", exception);
-                    future.complete(new Lookup(500, "Internal Server Error"));
-                }
-            });
-            try {
-                Lookup result = future.get(config.timeoutMillis(), TimeUnit.MILLISECONDS);
-                return json(response, Integer.parseInt(result.status), result.message);
-            } catch (TimeoutException exception) {
-                future.cancel(false);
-                task.cancel();
-                return json(response, 504, "Lookup Timed Out");
-            } catch (InterruptedException exception) {
-                Thread.currentThread().interrupt();
-                task.cancel();
-                return json(response, 503, "Service Unavailable");
-            } catch (ExecutionException exception) {
-                plugin.getLogger().log(Level.WARNING, "Placeholder lookup failed", exception);
-                return json(response, 500, "Internal Server Error");
+
+            String expression = "%" + name + "%";
+            OfflinePlayer player = playerId == null ? null : Bukkit.getOfflinePlayer(playerId);
+            if (player != null && !player.hasPlayedBefore() && !player.isOnline()) {
+                return json(response, 400, "Player Has Not Played Before");
             }
-        } catch (RuntimeException exception) {
-            plugin.getLogger().log(Level.WARNING, "Could not schedule placeholder lookup", exception);
-            return json(response, 503, "Service Unavailable");
+
+            // Spark invokes routes on its Jetty worker pool. Keep both OfflinePlayer lookup and
+            // PlaceholderAPI evaluation on that worker instead of moving the request onto the
+            // Minecraft main thread. Placeholder expansions queried through this endpoint must
+            // therefore support off-thread evaluation.
+            String result = PlaceholderAPI.setPlaceholders(player, expression);
+            if (!accepting.get() || !plugin.isEnabled()) {
+                return json(response, 503, "Service Unavailable");
+            }
+
+            Lookup lookup = resolveResult(expression, result);
+            return json(response, Integer.parseInt(lookup.status), lookup.message);
+        } catch (Exception exception) {
+            plugin.getLogger().log(Level.WARNING, "Placeholder lookup failed", exception);
+            return json(response, 500, "Internal Server Error");
         } finally {
-            pending.remove(future);
             concurrent.release();
         }
     }
@@ -161,11 +137,6 @@ final class SparkWrapper {
         return new Lookup(status, status == 406 ? "Invalid Placeholder" : result);
     }
 
-    void track(CompletableFuture<Lookup> future) {
-        pending.add(future);
-        if (!accepting.get()) future.complete(new Lookup(503, "Service Unavailable"));
-    }
-
     static String json(Response response, int status, String message) {
         response.status(status);
         response.type("application/json");
@@ -175,9 +146,6 @@ final class SparkWrapper {
     void stop() {
         if (!stopped.compareAndSet(false, true)) return;
         accepting.set(false);
-        for (CompletableFuture<Lookup> future : pending) {
-            future.complete(new Lookup(503, "Service Unavailable"));
-        }
         if (http != null) http.stop();
     }
 
