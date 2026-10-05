@@ -8,11 +8,15 @@ import java.util.Arrays;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.logging.Level;
 
 public final class RestPapiLoader {
     private final Restpapi plugin;
-    private SparkWrapper webServer;
+    private final ExecutorService lifecycleExecutor =
+            Executors.newSingleThreadExecutor(Thread.ofVirtual().name("restpapi-lifecycle-", 0).factory());
+    private JettyServer webServer;
     private RestConfig runningConfig;
     private boolean reloading;
     private boolean disabled;
@@ -35,7 +39,7 @@ public final class RestPapiLoader {
         Objects.requireNonNull(plugin.getCommand("rpapi")).setExecutor(new RestPapiCommand(plugin));
         try {
             RestConfig config = new RestConfig(plugin.getConfig());
-            SparkWrapper server = new SparkWrapper(plugin, config);
+            JettyServer server = new JettyServer(plugin, config);
             server.start();
             webServer = server;
             runningConfig = config;
@@ -57,21 +61,19 @@ public final class RestPapiLoader {
             return CompletableFuture.completedFuture(false);
         }
         reloading = true;
-        SparkWrapper previous = webServer;
+        JettyServer previous = webServer;
         RestConfig previousConfig = runningConfig;
-        return CompletableFuture.supplyAsync(() -> replace(previous, previousConfig, next));
+        return CompletableFuture.supplyAsync(() -> replace(previous, previousConfig, next), lifecycleExecutor);
     }
 
-    private boolean replace(SparkWrapper previous, RestConfig previousConfig, RestConfig next) {
+    private boolean replace(JettyServer previous, RestConfig previousConfig, RestConfig next) {
         try {
-            if (previous != null) {
-                previous.stop();
-                previous.awaitStop(); // Never wait for Spark workers on the Bukkit tick thread.
-            }
+            if (previous != null) previous.stop();
             synchronized (this) {
                 if (disabled) return false;
             }
-            SparkWrapper replacement = new SparkWrapper(plugin, next);
+
+            JettyServer replacement = new JettyServer(plugin, next);
             replacement.start();
             synchronized (this) {
                 if (disabled) {
@@ -87,7 +89,7 @@ public final class RestPapiLoader {
             plugin.getLogger().log(Level.SEVERE, "REST reload failed; restoring previous service", exception);
             if (previousConfig != null && !isDisabled()) {
                 try {
-                    SparkWrapper restored = new SparkWrapper(plugin, previousConfig);
+                    JettyServer restored = new JettyServer(plugin, previousConfig);
                     restored.start();
                     synchronized (this) {
                         if (disabled) restored.stop();
@@ -109,12 +111,13 @@ public final class RestPapiLoader {
     private synchronized boolean isDisabled() { return disabled; }
 
     void disable() {
-        SparkWrapper server;
+        JettyServer server;
         synchronized (this) {
             disabled = true;
             server = webServer;
             webServer = null;
         }
         if (server != null) server.stop();
+        lifecycleExecutor.shutdown();
     }
 }
