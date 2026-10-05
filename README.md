@@ -11,7 +11,6 @@ port: 11001
 bind: 0.0.0.0
 tokens:
   - "replace-with-a-long-random-secret"
-timeout-ms: 3000
 max-concurrent: 16
 rate-limit:
   requests: 60
@@ -21,9 +20,11 @@ allowed-ips: []
 
 Tokens must contain at least 16 characters, cannot be blank or padded with spaces, and must be unique. A missing or invalid token configuration prevents startup. To rotate tokens, temporarily include old and new tokens, run `/restpapi reload`, update clients, then remove the old token and reload again. Never print the tokens or put them in browser JavaScript.
 
-`bind` selects the interface **inside the container** (default `0.0.0.0`). `allowed-ips` is an exact match list of socket peer IPs; an empty list permits any peer with a valid token. Behind Nginx it will normally see the proxy address, not the original client. It deliberately ignores `X-Forwarded-For`. The rate limit is per socket peer and uses a fixed window; no more than 4096 distinct peers are tracked. The concurrency limit returns HTTP 503 instead of queuing unbounded lookups. Placeholder evaluation runs on the Minecraft main thread; clients receive HTTP 504 if it takes longer than `timeout-ms`. A lookup already running on the main thread cannot be interrupted.
+`bind` selects the interface **inside the container** (default `0.0.0.0`). `allowed-ips` is an exact match list of socket peer IPs; an empty list permits any peer with a valid token. Behind Nginx it will normally see the proxy address, not the original client. It deliberately ignores `X-Forwarded-For`. The rate limit is per socket peer and uses a fixed window; no more than 4096 distinct peers are tracked. The concurrency limit returns HTTP 503 instead of queuing unbounded lookups.
 
-The command `/restpapi reload` reads the file again, validates it before stopping the old listener, and attempts to restore the old listener if binding the new one fails. A failed rollback disables the plugin. Listener shutdown and startup take place off the Minecraft main thread; the command reports the result after they finish. In-flight lookups receive 503 during shutdown. A successful reload updates both the port and token set.
+Placeholder evaluation, including `Bukkit.getOfflinePlayer(UUID)`, runs directly on Spark's Jetty worker thread and is not scheduled onto the Minecraft main thread. This keeps offline-player lookups and PlaceholderAPI evaluation off the server tick thread, but it also means every expansion queried through this API must support off-thread execution. PlaceholderAPI does not make third-party expansions thread-safe automatically. There is no server-side lookup timeout because a synchronous expansion running on the current Spark worker cannot be safely preempted; use `max-concurrent` to bound concurrent evaluations and configure request timeouts in the HTTP client or reverse proxy.
+
+The command `/restpapi reload` reads the file again, validates it before stopping the old listener, and attempts to restore the old listener if binding the new one fails. A failed rollback disables the plugin. Listener shutdown and startup take place off the Minecraft main thread; the command reports the result after they finish. Requests that begin after shutdown starts receive 503. A successful reload updates both the port and token set.
 
 ## Requests
 
@@ -34,7 +35,7 @@ curl -H "Token: YOUR_SECRET" "http://127.0.0.1:11001/da8a8993-adfa-4d29-99b1-9d0
 curl -H "Token: YOUR_SECRET" "http://127.0.0.1:11001/server/server_online"
 ```
 
-Use the placeholder name without percent signs. Unknown placeholders return 406, missing player data 400, bad UUID 400, unauthorized requests 401, blocked peers 403, unknown routes 404, excess requests 429, overload or shutdown 503, and timed out lookups 504. Empty resolved values are valid. Offline results depend on each PlaceholderAPI expansion's support for offline players.
+Use the placeholder name without percent signs. Unknown placeholders return 406, missing player data 400, bad UUID 400, unauthorized requests 401, blocked peers 403, unknown routes 404, excess requests 429, and overload or shutdown 503. Empty resolved values are valid. Offline results depend on each PlaceholderAPI expansion's support for offline players and off-thread evaluation.
 
 ## Docker, Pterodactyl and external bots
 

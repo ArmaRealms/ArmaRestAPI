@@ -25,7 +25,6 @@ public final class RestPapiLoader {
             yaml.set("port", 8080);
             yaml.set("bind", "0.0.0.0");
             yaml.set("tokens", Arrays.asList(UUID.randomUUID().toString(), UUID.randomUUID().toString()));
-            yaml.set("timeout-ms", 3000);
             yaml.set("max-concurrent", 16);
             yaml.set("rate-limit.requests", 60);
             yaml.set("rate-limit.window-seconds", 60);

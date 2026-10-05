@@ -7,8 +7,6 @@ import spark.Response;
 
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -81,15 +79,9 @@ class RestSecurityTest {
     }
 
     @Test
-    void shutdownUnblocksAnAwaitingHttpRequestWithoutRunningItsBukkitTask() throws Exception {
+    void shutdownIsIdempotentBeforeHttpStartup() {
         SparkWrapper server = new SparkWrapper(mock(Restpapi.class), new RestConfig(config()));
-        CompletableFuture<SparkWrapper.Lookup> lookup = new CompletableFuture<>();
-        server.track(lookup);
-        server.stop();
-        assertNotNull(lookup.get(100, TimeUnit.MILLISECONDS));
-
-        CompletableFuture<SparkWrapper.Lookup> lateLookup = new CompletableFuture<>();
-        server.track(lateLookup);
-        assertNotNull(lateLookup.get(100, TimeUnit.MILLISECONDS));
+        assertDoesNotThrow(server::stop);
+        assertDoesNotThrow(server::stop);
     }
 }
