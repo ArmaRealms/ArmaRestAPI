@@ -3,13 +3,12 @@ package me.fredthedoggy.restpapi;
 import com.google.gson.JsonParser;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.junit.jupiter.api.Test;
-import spark.Response;
 
 import java.util.Arrays;
 import java.util.Collections;
 
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.mock;
 
 class RestSecurityTest {
     private YamlConfiguration config() {
@@ -20,7 +19,7 @@ class RestSecurityTest {
 
     @Test
     void tokensMustMatchExactly() {
-        SparkWrapper server = new SparkWrapper(mock(Restpapi.class), new RestConfig(config()));
+        JettyServer server = new JettyServer(mock(Restpapi.class), new RestConfig(config()));
         assertTrue(server.authorized("12345678-1234-1234-1234-123456789abc"));
         assertFalse(server.authorized("prefix12345678-1234-1234-1234-123456789abc"));
         assertFalse(server.authorized("12345678-1234-1234-1234-123456789abc suffix"));
@@ -41,14 +40,11 @@ class RestSecurityTest {
 
     @Test
     void serializesPlaceholderTextAndKeepsLegacyStatus() {
-        Response response = mock(Response.class);
         String message = "Name: \"Thiago\" \\ test\nline";
-        String payload = SparkWrapper.json(response, 200, message);
+        String payload = JettyServer.jsonPayload(200, message);
         assertEquals(message, JsonParser.parseString(payload).getAsJsonObject().get("message").getAsString());
         assertEquals("200", JsonParser.parseString(payload).getAsJsonObject().get("status").getAsString());
-        verify(response).type("application/json");
-        verify(response).status(200);
-        assertEquals("", JsonParser.parseString(SparkWrapper.json(response, 200, ""))
+        assertEquals("", JsonParser.parseString(JettyServer.jsonPayload(200, ""))
                 .getAsJsonObject().get("message").getAsString());
     }
 
@@ -63,9 +59,9 @@ class RestSecurityTest {
 
     @Test
     void distinguishesUnknownPlaceholderFromEmptyValue() {
-        assertEquals(406, SparkWrapper.placeholderStatus("%unknown%", "%unknown%"));
-        assertEquals(200, SparkWrapper.placeholderStatus("%known%", ""));
-        assertEquals(200, SparkWrapper.placeholderStatus("%known%", "value"));
+        assertEquals(406, JettyServer.placeholderStatus("%unknown%", "%unknown%"));
+        assertEquals(200, JettyServer.placeholderStatus("%known%", ""));
+        assertEquals(200, JettyServer.placeholderStatus("%known%", "value"));
     }
 
     @Test
@@ -80,7 +76,7 @@ class RestSecurityTest {
 
     @Test
     void shutdownIsIdempotentBeforeHttpStartup() {
-        SparkWrapper server = new SparkWrapper(mock(Restpapi.class), new RestConfig(config()));
+        JettyServer server = new JettyServer(mock(Restpapi.class), new RestConfig(config()));
         assertDoesNotThrow(server::stop);
         assertDoesNotThrow(server::stop);
     }
