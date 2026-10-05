@@ -72,6 +72,9 @@ class RestSecurityTest {
         yaml.set("port", 8080);
         yaml.set("max-concurrent", 1000);
         assertThrows(IllegalArgumentException.class, () -> new RestConfig(yaml));
+        yaml.set("max-concurrent", 16);
+        yaml.set("shutdown-timeout-ms", 0);
+        assertThrows(IllegalArgumentException.class, () -> new RestConfig(yaml));
     }
 
     @Test
