@@ -30,6 +30,7 @@ public final class RestPapiLoader {
             yaml.set("bind", "0.0.0.0");
             yaml.set("tokens", Arrays.asList(UUID.randomUUID().toString(), UUID.randomUUID().toString()));
             yaml.set("max-concurrent", 16);
+            yaml.set("shutdown-timeout-ms", 5000);
             yaml.set("rate-limit.requests", 60);
             yaml.set("rate-limit.window-seconds", 60);
             yaml.set("allowed-ips", java.util.Collections.emptyList());
