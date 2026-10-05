@@ -26,16 +26,14 @@ tasks.jar {
 
 shadowJar {
     relocate 'org.bstats', 'me.fredthedoggy.restpapi.libs.bstats'
-    relocate 'spark', 'me.fredthedoggy.restpapi.libs.spark'
+    relocate 'org.eclipse.jetty', 'me.fredthedoggy.restpapi.libs.jetty'
     relocate 'com.google.gson', 'me.fredthedoggy.restpapi.libs.gson'
     archiveBaseName.set('Restpapi')
     archiveVersion.set('1.0.5')
     archiveClassifier.set('')
-    // Removed manifest block as it's not needed for Bukkit plugins
 
     // Explicitly include the main source set output for relocation
     from sourceSets.main.output
-
 }
 
 // Make sure 'build' depends on 'shadowJar'
@@ -51,7 +49,9 @@ dependencies {
     compileOnly 'io.papermc.paper:paper-api:1.21.11-R0.1-SNAPSHOT'
     compileOnly 'me.clip:placeholderapi:2.12.3'
     implementation 'org.bstats:bstats-bukkit:3.0.2'
-    implementation 'com.sparkjava:spark-core:2.9.4'
+    implementation('org.eclipse.jetty:jetty-server:12.1.13') {
+        exclude group: 'org.slf4j', module: 'slf4j-api'
+    }
     implementation 'com.google.code.gson:gson:2.11.0'
     testImplementation 'org.junit.jupiter:junit-jupiter:5.11.4'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'

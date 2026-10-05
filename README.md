@@ -2,6 +2,14 @@
 
 RestPAPI exposes PlaceholderAPI values from each Bukkit/Paper backend over HTTP. Install PlaceholderAPI and this plugin on **each** backend you want to query. Velocity forwards Minecraft traffic, not these HTTP requests.
 
+## HTTP server
+
+RestPAPI embeds **Jetty 12.1** directly. Spark Java is not used.
+
+Jetty keeps its internal server work on its platform-thread pool and dispatches blocking application work through a Java virtual-thread executor. The REST handlers are declared as blocking handlers, so offline-player resolution and PlaceholderAPI evaluation can run on virtual threads without occupying the Minecraft server thread.
+
+Routing uses Jetty's native `PathMappingsHandler` and `UriTemplatePathSpec`. Request concurrency is enforced by `QoSHandler`, and source-address allowlisting is enforced by `InetAccessHandler`.
+
 ## Configuration
 
 On first start, `plugins/RestPAPI/config.yml` is created with two random UUID tokens. Keep them private. Example:
@@ -12,6 +20,7 @@ bind: 0.0.0.0
 tokens:
   - "replace-with-a-long-random-secret"
 max-concurrent: 16
+shutdown-timeout-ms: 5000
 rate-limit:
   requests: 60
   window-seconds: 60
@@ -20,11 +29,17 @@ allowed-ips: []
 
 Tokens must contain at least 16 characters, cannot be blank or padded with spaces, and must be unique. A missing or invalid token configuration prevents startup. To rotate tokens, temporarily include old and new tokens, run `/restpapi reload`, update clients, then remove the old token and reload again. Never print the tokens or put them in browser JavaScript.
 
-`bind` selects the interface **inside the container** (default `0.0.0.0`). `allowed-ips` is an exact match list of socket peer IPs; an empty list permits any peer with a valid token. Behind Nginx it will normally see the proxy address, not the original client. It deliberately ignores `X-Forwarded-For`. The rate limit is per socket peer and uses a fixed window; no more than 4096 distinct peers are tracked. The concurrency limit returns HTTP 503 instead of queuing unbounded lookups.
+`bind` selects the interface **inside the container** (default `0.0.0.0`). `allowed-ips` is enforced by Jetty against the real remote address of the connection rather than forwarded headers. An empty list permits any peer with a valid token. Values may use Jetty address patterns such as an exact address or CIDR range. Behind Nginx, RestPAPI will normally see the proxy address unless the network topology preserves the original peer address; it deliberately does not trust `X-Forwarded-For` for access control.
 
-Placeholder evaluation, including `Bukkit.getOfflinePlayer(UUID)`, runs directly on Spark's Jetty worker thread and is not scheduled onto the Minecraft main thread. This keeps offline-player lookups and PlaceholderAPI evaluation off the server tick thread, but it also means every expansion queried through this API must support off-thread execution. PlaceholderAPI does not make third-party expansions thread-safe automatically. There is no server-side lookup timeout because a synchronous expansion running on the current Spark worker cannot be safely preempted; use `max-concurrent` to bound concurrent evaluations and configure request timeouts in the HTTP client or reverse proxy.
+`max-concurrent` is enforced by Jetty's `QoSHandler`. Requests beyond the configured number are rejected immediately with HTTP 503 instead of accumulating an unbounded queue. Jetty's virtual-thread executor has its own resource guard, while `max-concurrent` remains the application-level limit for REST requests. `shutdown-timeout-ms` controls how long Jetty waits for in-flight requests to finish during reload or shutdown; new requests are rejected with HTTP 503 once graceful shutdown begins.
 
-The command `/restpapi reload` reads the file again, validates it before stopping the old listener, and attempts to restore the old listener if binding the new one fails. A failed rollback disables the plugin. Listener shutdown and startup take place off the Minecraft main thread; the command reports the result after they finish. Requests that begin after shutdown starts receive 503. A successful reload updates both the port and token set.
+The fixed-window rate limit remains implemented by RestPAPI because Jetty's built-in DoS rate limiting uses per-second/leaky-bucket semantics rather than the existing `requests` plus arbitrary `window-seconds` contract. No more than 4096 distinct peers are tracked by the fixed-window limiter.
+
+Placeholder evaluation, including `Bukkit.getOfflinePlayer(UUID)`, is never scheduled onto the Minecraft main thread. Both player and server placeholder routes execute from Jetty request handling. Third-party PlaceholderAPI expansions queried through this API must therefore support off-thread evaluation; PlaceholderAPI does not make expansion code thread-safe automatically.
+
+There is no server-side placeholder timeout because synchronous third-party expansion code cannot be safely preempted. Configure request timeouts in the HTTP client or reverse proxy and use `max-concurrent` to bound simultaneous evaluations.
+
+The command `/restpapi reload` reads the file again, validates it before stopping the old listener, and attempts to restore the old listener if binding the new one fails. Reload lifecycle work runs on a dedicated Java virtual-thread executor. Jetty's `GracefulHandler` drains in-flight requests for up to `shutdown-timeout-ms` while rejecting new requests with 503. A failed rollback disables the plugin. A successful reload updates the port, bind address, tokens, limits, graceful-shutdown timeout, and allowlist.
 
 ## Requests
 
@@ -53,4 +68,4 @@ Then query `https://api.example.com/survival/UUID/player_name` with the `Token` 
 
 ## Build
 
-Use JDK 25 and `bash gradlew test shadowJar` (Gradle 9.8.0). The plugin targets Paper API 1.21.11; the shaded JAR is written under `build/libs`.
+Use JDK 25 and `bash gradlew test shadowJar` (Gradle 9.8.0). The plugin targets Paper API 1.21.11 and embeds Jetty 12.1.13; the shaded JAR is written under `build/libs`.
