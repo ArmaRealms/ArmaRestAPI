@@ -62,7 +62,7 @@ final class JettyServer {
             connector.setPort(config.port());
             jetty.addConnector(connector);
 
-            PathMappingsHandler routes = new PathMappingsHandler();
+            PathMappingsHandler routes = new PathMappingsHandler.NoContext();
             routes.addMapping(SERVER_ROUTE, new PlaceholderHandler(SERVER_ROUTE, false));
             routes.addMapping(PLAYER_ROUTE, new PlaceholderHandler(PLAYER_ROUTE, true));
 
