@@ -13,6 +13,7 @@ import org.eclipse.jetty.server.Request;
 import org.eclipse.jetty.server.Response;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
+import org.eclipse.jetty.server.handler.GracefulHandler;
 import org.eclipse.jetty.server.handler.InetAccessHandler;
 import org.eclipse.jetty.server.handler.PathMappingsHandler;
 import org.eclipse.jetty.server.handler.QoSHandler;
@@ -35,7 +36,6 @@ final class JettyServer {
     private final Restpapi plugin;
     private final RestConfig config;
     private final RequestLimiter limiter;
-    private final AtomicBoolean accepting = new AtomicBoolean(true);
     private final AtomicBoolean stopped = new AtomicBoolean(false);
     private Server server;
 
@@ -46,6 +46,7 @@ final class JettyServer {
     }
 
     void start() {
+        Server jetty = null;
         try {
             VirtualThreadPool virtualThreads = new VirtualThreadPool();
             virtualThreads.setName("restpapi-virtual");
@@ -54,8 +55,9 @@ final class JettyServer {
             platformThreads.setName("restpapi-jetty");
             platformThreads.setVirtualThreadsExecutor(virtualThreads);
 
-            Server jetty = new Server(platformThreads);
+            jetty = new Server(platformThreads);
             jetty.addBean(virtualThreads);
+            jetty.setStopTimeout(config.shutdownTimeoutMillis());
 
             ServerConnector connector = new ServerConnector(jetty);
             connector.setHost(config.bind());
@@ -73,18 +75,24 @@ final class JettyServer {
             qos.setMaxSuspendedRequestCount(0);
             qos.setRejectStatusCode(HttpStatus.SERVICE_UNAVAILABLE_503);
 
-            Handler root = qos;
+            Handler protectedHandler = qos;
             if (!config.allowedIps().isEmpty()) {
-                JsonInetAccessHandler access = new JsonInetAccessHandler(root);
+                JsonInetAccessHandler access = new JsonInetAccessHandler(protectedHandler);
                 access.include(config.allowedIps().toArray(String[]::new));
-                root = access;
+                protectedHandler = access;
             }
 
-            jetty.setHandler(root);
+            jetty.setHandler(new JsonGracefulHandler(protectedHandler));
             jetty.start();
             server = jetty;
         } catch (Exception exception) {
-            accepting.set(false);
+            if (jetty != null) {
+                try {
+                    jetty.stop();
+                } catch (Exception stopException) {
+                    exception.addSuppressed(stopException);
+                }
+            }
             throw new IllegalStateException("Jetty HTTP server could not start", exception);
         }
     }
@@ -103,7 +111,7 @@ final class JettyServer {
             if (!"GET".equals(request.getMethod())) {
                 return writeJson(response, callback, 404, "Invalid URI");
             }
-            if (!accepting.get() || !plugin.isEnabled()) {
+            if (!plugin.isEnabled()) {
                 return writeJson(response, callback, 503, "Service Unavailable");
             }
             if (!authorized(request.getHeaders().get("Token"))) {
@@ -139,7 +147,7 @@ final class JettyServer {
 
                 String expression = "%" + name + "%";
                 String result = PlaceholderAPI.setPlaceholders(player, expression);
-                if (!accepting.get() || !plugin.isEnabled()) {
+                if (!plugin.isEnabled()) {
                     return writeJson(response, callback, 503, "Service Unavailable");
                 }
 
@@ -179,7 +187,6 @@ final class JettyServer {
 
     void stop() {
         if (!stopped.compareAndSet(false, true)) return;
-        accepting.set(false);
         Server current = server;
         server = null;
         if (current == null) return;
@@ -188,6 +195,17 @@ final class JettyServer {
             current.stop();
         } catch (Exception exception) {
             plugin.getLogger().log(Level.WARNING, "Jetty HTTP server did not stop cleanly", exception);
+        }
+    }
+
+    private static final class JsonGracefulHandler extends GracefulHandler {
+        private JsonGracefulHandler(Handler handler) {
+            super(handler);
+        }
+
+        @Override
+        protected void handleShutdownRejection(Request request, Response response, Callback callback) {
+            writeJson(response, callback, 503, "Service Unavailable");
         }
     }
 
